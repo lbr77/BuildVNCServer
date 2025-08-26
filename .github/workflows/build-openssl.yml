@@ -1,0 +1,67 @@
+name: Build OpenSSL and cURL for iOS
+
+on:
+  workflow_call:
+    outputs:
+      cache-key:
+        description: "Cache key for OpenSSL build"
+        value: ${{ jobs.build-openssl.outputs.cache-key }}
+      artifact-name:
+        description: "Artifact name for OpenSSL build"
+        value: ${{ jobs.build-openssl.outputs.artifact-name }}
+  workflow_dispatch:
+
+env:
+  IOS_DEPLOYMENT_TARGET: "13.0"
+
+jobs:
+  build-openssl:
+    runs-on: macos-latest
+    outputs:
+      cache-key: ${{ steps.cache-key.outputs.key }}
+      artifact-name: openssl-curl-ios
+      
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Xcode
+      run: |
+        sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+        xcodebuild -version
+
+    - name: Generate cache key
+      id: cache-key
+      run: |
+        echo "key=openssl-curl-${{ runner.os }}-${{ hashFiles('**/build.sh') }}-$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+    - name: Cache OpenSSL build
+      id: cache-openssl
+      uses: actions/cache@v4
+      with:
+        path: Build-OpenSSL-cURL
+        key: ${{ steps.cache-key.outputs.key }}
+        restore-keys: |
+          openssl-curl-${{ runner.os }}-
+
+    - name: Clone and build OpenSSL-cURL
+      if: steps.cache-openssl.outputs.cache-hit != 'true'
+      run: |
+        set -ex
+        git clone https://github.com/jasonacox/Build-OpenSSL-cURL.git
+        cd Build-OpenSSL-cURL
+        ./build.sh -y
+
+    - name: Verify OpenSSL build
+      run: |
+        ls -la Build-OpenSSL-cURL/openssl/iOS/lib/
+        ls -la Build-OpenSSL-cURL/openssl/iOS/include/
+        echo "OpenSSL libraries:"
+        file Build-OpenSSL-cURL/openssl/iOS/lib/*.a | head -5
+
+    - name: Upload OpenSSL artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: openssl-curl-ios
+        path: Build-OpenSSL-cURL/
+        retention-days: 1

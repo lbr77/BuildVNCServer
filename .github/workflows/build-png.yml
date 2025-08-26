@@ -1,0 +1,113 @@
+name: Build PNG Library for iOS
+
+on:
+  workflow_call:
+    outputs:
+      cache-key:
+        description: "Cache key for PNG build"
+        value: ${{ jobs.build-png.outputs.cache-key }}
+      artifact-name:
+        description: "Artifact name for PNG build"
+        value: ${{ jobs.build-png.outputs.artifact-name }}
+  workflow_dispatch:
+
+env:
+  IOS_DEPLOYMENT_TARGET: "13.0"
+
+jobs:
+  build-png:
+    runs-on: macos-latest
+    outputs:
+      cache-key: ${{ steps.cache-key.outputs.key }}
+      artifact-name: png-ios
+      
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Xcode
+      run: |
+        sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+        xcodebuild -version
+
+    - name: Install dependencies
+      run: |
+        brew install cmake wget
+
+    - name: Generate cache key
+      id: cache-key
+      run: |
+        echo "key=png-${{ runner.os }}-${{ hashFiles('BuildPNG/build.sh') }}-$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+    - name: Cache PNG build
+      id: cache-png
+      uses: actions/cache@v4
+      with:
+        path: BuildPNG/output
+        key: ${{ steps.cache-key.outputs.key }}
+        restore-keys: |
+          png-${{ runner.os }}-
+
+    - name: Build PNG library
+      if: steps.cache-png.outputs.cache-hit != 'true'
+      working-directory: BuildPNG
+      run: |
+        set -ex
+        
+        # Download and extract PNG source
+        wget --content-disposition "http://prdownloads.sourceforge.net/libpng/libpng-1.6.37.tar.gz?download" -O libpng-1.6.37.tar.gz
+        tar xvf libpng-1.6.37.tar.gz libpng-1.6.37
+        WORKDING_DIR="$(pwd)/libpng-1.6.37"
+        
+        # Check if working dir is all right
+        if [ ! -d "$WORKDING_DIR" ]; then
+            mkdir -p "$WORKDING_DIR"
+        fi
+        
+        cd "$WORKDING_DIR"
+        WORKDING_DIR=$(pwd)
+        
+        # Setup iOS build environment
+        IOS_PLATFORMDIR=/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform
+        IOS_SYSROOT=($IOS_PLATFORMDIR/Developer/SDKs/iPhoneOS.sdk)
+        export CFLAGS="-Wall -arch arm64 -miphoneos-version-min=${{ env.IOS_DEPLOYMENT_TARGET }}"
+        
+        # Configure with CMake
+        cmake -G Xcode -B build \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.16 \
+            -DCMAKE_POLICY_VERSION_MAX=3.27 \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.IOS_DEPLOYMENT_TARGET }} \
+            -DCMAKE_MACOSX_BUNDLE=${WORKDING_DIR}/../output \
+            -DCMAKE_INSTALL_PREFIX=${WORKDING_DIR}/../output \
+            -DPNG_ARM_NEON=on \
+            -DCMAKE_OSX_SYSROOT=${IOS_SYSROOT}
+        
+        # Build with Xcode
+        xcodebuild build \
+            -project build/libpng.xcodeproj \
+            -scheme ALL_BUILD \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGN_ENTITLEMENTS="" CODE_SIGNING_ALLOWED="NO" \
+            STRIP_INSTALLED_PRODUCT=NO COPY_PHASE_STRIP=NO UNSTRIPPED_PRODUCT=NO
+        
+        # Install
+        cd build
+        cmake -P cmake_install.cmake
+
+    - name: Verify PNG build
+      run: |
+        ls -la BuildPNG/output/lib/
+        ls -la BuildPNG/output/include/
+        echo "PNG libraries:"
+        file BuildPNG/output/lib/*.a | head -5
+
+    - name: Upload PNG artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: png-ios
+        path: BuildPNG/output/
+        retention-days: 1
