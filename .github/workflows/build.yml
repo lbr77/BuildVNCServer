@@ -48,8 +48,8 @@ jobs:
         # Install iOS SDK if not available
         if [ ! -d "$THEOS/sdks/iPhoneOS${{ env.IOS_SDK_VERSION }}.sdk" ]; then
           echo "Downloading iOS SDK ${{ env.IOS_SDK_VERSION }}"
-          curl -L "${{ env.IOS_SDK_URL }}/releases/download/master/iPhoneOS${{ env.IOS_SDK_VERSION }}.sdk.zip" -o ios_sdk.zip
-          echo "${{ env.IOS_SDK_URL }}/releases/download/master/iPhoneOS${{ env.IOS_SDK_VERSION }}.sdk.zip"
+          curl -L "${{ env.IOS_SDK_URL }}/releases/download/iOS${{ env.IOS_SDK_VERSION }}-SDKs/iPhoneOS${{ env.IOS_SDK_VERSION }}.sdk.zip" -o ios_sdk.zip
+          echo "${{ env.IOS_SDK_URL }}/releases/download/iOS${{ env.IOS_SDK_VERSION }}-SDKs/iPhoneOS${{ env.IOS_SDK_VERSION }}.sdk.zip"
           # sudo tar -xf ios_sdk.tar.xz -C $THEOS/sdks/
           sudo unzip ios_sdk.zip -d $THEOS/sdks
           rm ios_sdk.zip
