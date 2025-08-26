@@ -19,6 +19,7 @@ This directory contains GitHub Actions workflows for automatically building and 
 - Verifies build outputs and library architectures
 - Uploads build artifacts for download
 - Includes error handling and build log upload on failure
+- Uses latest GitHub Actions (v4) for improved performance
 
 **Artifacts**:
 - `libvncserver-ios-arm64` - Built libraries and headers
