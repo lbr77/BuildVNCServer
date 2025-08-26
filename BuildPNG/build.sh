@@ -20,6 +20,7 @@ export CFLAGS="-Wall -arch arm64 -miphoneos-version-min=13.0"
 
 cmake -G Xcode -T buildsystem=1 -B build \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -DCMAKE_POLICY_VERSION_MAX=3.27 \
     -DBUILD_SHARED_LIBS=OFF \
     -DCMAKE_SYSTEM_NAME=iOS \
     -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
