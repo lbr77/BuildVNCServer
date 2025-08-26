@@ -2,7 +2,7 @@
 
 set -ex
 
-wget https://udomain.dl.sourceforge.net/project/libpng/libpng16/1.6.37/libpng-1.6.37.tar.gz
+wget --content-disposition "http://prdownloads.sourceforge.net/libpng/libpng-1.6.37.tar.gz?download" -O libpng-1.6.37.tar.gz
 tar xvf libpng-1.6.37.tar.gz libpng-1.6.37
 WORKDING_DIR="$(dirname "$0")/libpng-1.6.37"
 
