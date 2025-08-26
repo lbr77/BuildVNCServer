@@ -18,7 +18,7 @@ IOS_PLATFORMDIR=/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.pl
 IOS_SYSROOT=($IOS_PLATFORMDIR/Developer/SDKs/iPhoneOS.sdk)
 export CFLAGS="-Wall -arch arm64 -miphoneos-version-min=13.0"
 
-cmake -G Xcode -T buildsystem=1 -B build \
+cmake -G Xcode -B build \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.16 \
     -DCMAKE_POLICY_VERSION_MAX=3.27 \
     -DBUILD_SHARED_LIBS=OFF \
