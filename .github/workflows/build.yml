@@ -1,0 +1,140 @@
+name: Build VNC Server for iOS
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+
+env:
+  IOS_DEPLOYMENT_TARGET: "14.0"
+  XCODE_VERSION: "15.1"
+  IOS_SDK_VERSION: "17.2"
+
+jobs:
+  build:
+    runs-on: macos-14
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Select Xcode version
+      run: |
+        sudo xcode-select -s /Applications/Xcode_${{ env.XCODE_VERSION }}.app/Contents/Developer
+        xcodebuild -version
+        
+    - name: Install dependencies
+      run: |
+        brew update
+        brew install cmake ninja autoconf automake libtool pkg-config
+        
+    - name: Setup Theos
+      run: |
+        # Install Theos
+        export THEOS=/opt/theos
+        sudo git clone --recursive https://github.com/theos/theos.git $THEOS
+        sudo chown -R $(id -u):$(id -g) $THEOS
+        
+        # Setup Theos environment
+        echo "export THEOS=/opt/theos" >> $GITHUB_ENV
+        echo "export PATH=\$THEOS/bin:\$PATH" >> $GITHUB_ENV
+        echo "/opt/theos/bin" >> $GITHUB_PATH
+        
+        # Install iOS SDK if not available
+        if [ ! -d "$THEOS/sdks/iPhoneOS${{ env.IOS_SDK_VERSION }}.sdk" ]; then
+          echo "Downloading iOS SDK ${{ env.IOS_SDK_VERSION }}"
+          curl -L "https://github.com/theos/sdks/releases/download/master/iPhoneOS${{ env.IOS_SDK_VERSION }}.sdk.tar.xz" -o ios_sdk.tar.xz
+          sudo tar -xf ios_sdk.tar.xz -C $THEOS/sdks/
+          rm ios_sdk.tar.xz
+        fi
+        
+    - name: Verify iOS SDK
+      run: |
+        ls -la /Applications/Xcode_${{ env.XCODE_VERSION }}.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/
+        echo "Available SDKs:"
+        find /Applications/Xcode_${{ env.XCODE_VERSION }}.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/ -name "*.sdk" -type d
+        
+    - name: Update build script for higher SDK
+      run: |
+        # Update the build script to use higher iOS deployment target
+        sed -i '' 's/CMAKE_OSX_DEPLOYMENT_TARGET=13.0/CMAKE_OSX_DEPLOYMENT_TARGET=${{ env.IOS_DEPLOYMENT_TARGET }}/g' build.sh
+        
+        # Make build script executable
+        chmod +x build.sh
+        
+    - name: Setup build environment
+      run: |
+        # Set environment variables for cross-compilation
+        export IPHONEOS_DEPLOYMENT_TARGET=${{ env.IOS_DEPLOYMENT_TARGET }}
+        export MACOSX_DEPLOYMENT_TARGET=10.15
+        export DEVELOPER_DIR=/Applications/Xcode_${{ env.XCODE_VERSION }}.app/Contents/Developer
+        
+        # Export for subsequent steps
+        echo "IPHONEOS_DEPLOYMENT_TARGET=${{ env.IOS_DEPLOYMENT_TARGET }}" >> $GITHUB_ENV
+        echo "MACOSX_DEPLOYMENT_TARGET=10.15" >> $GITHUB_ENV
+        echo "DEVELOPER_DIR=/Applications/Xcode_${{ env.XCODE_VERSION }}.app/Contents/Developer" >> $GITHUB_ENV
+        
+    - name: Cache dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          Build-OpenSSL-cURL
+          BuildJPEG/output
+          BuildLZO/output
+          BuildPNG/output
+          BuildSASL/output
+        key: dependencies-${{ runner.os }}-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ hashFiles('build.sh', 'BuildJPEG/**', 'BuildLZO/**', 'BuildPNG/**', 'BuildSASL/**') }}
+        restore-keys: |
+          dependencies-${{ runner.os }}-${{ env.IOS_DEPLOYMENT_TARGET }}-
+          dependencies-${{ runner.os }}-
+          
+    - name: Build VNC Server
+      run: |
+        export THEOS=/opt/theos
+        export PATH=$THEOS/bin:$PATH
+        ./build.sh
+        
+    - name: Verify build outputs
+      run: |
+        echo "Build completed. Checking outputs:"
+        ls -la dist/lib/
+        ls -la dist/include/
+        
+        # Check architecture of built libraries
+        for lib in dist/lib/*.a; do
+          echo "Architecture of $lib:"
+          lipo -info "$lib" || echo "Could not get architecture info for $lib"
+        done
+        
+    - name: Package artifacts
+      run: |
+        # Create release package
+        mkdir -p release
+        cp -r dist release/
+        cp README.md release/
+        
+        # Create tarball
+        tar -czf libvncserver-ios-arm64.tar.gz -C release .
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: libvncserver-ios-arm64
+        path: |
+          libvncserver-ios-arm64.tar.gz
+          dist/
+        retention-days: 30
+        
+    - name: Upload build logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs
+        path: |
+          **/*.log
+          **/build.log
+        retention-days: 7

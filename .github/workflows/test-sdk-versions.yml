@@ -1,0 +1,162 @@
+name: Test SDK Versions
+
+on:
+  workflow_dispatch:
+    inputs:
+      sdk_versions:
+        description: 'iOS SDK versions to test (comma-separated)'
+        required: false
+        default: '16.4,17.0,17.2'
+      deployment_targets:
+        description: 'iOS deployment targets to test (comma-separated)'
+        required: false
+        default: '13.0,14.0,15.0'
+  schedule:
+    # Run weekly on Sunday at 2 AM UTC
+    - cron: '0 2 * * 0'
+
+env:
+  XCODE_VERSION: "15.1"
+
+jobs:
+  test-matrix:
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ios_sdk: "16.4"
+            deployment_target: "13.0"
+          - ios_sdk: "17.0"
+            deployment_target: "14.0"
+          - ios_sdk: "17.2"
+            deployment_target: "14.0"
+          - ios_sdk: "17.2"
+            deployment_target: "15.0"
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Select Xcode version
+      run: |
+        sudo xcode-select -s /Applications/Xcode_${{ env.XCODE_VERSION }}.app/Contents/Developer
+        xcodebuild -version
+        
+    - name: Install dependencies
+      run: |
+        brew update
+        brew install cmake ninja autoconf automake libtool pkg-config
+        
+    - name: Setup Theos
+      run: |
+        export THEOS=/opt/theos
+        sudo git clone --recursive https://github.com/theos/theos.git $THEOS
+        sudo chown -R $(id -u):$(id -g) $THEOS
+        
+        echo "export THEOS=/opt/theos" >> $GITHUB_ENV
+        echo "export PATH=\$THEOS/bin:\$PATH" >> $GITHUB_ENV
+        echo "/opt/theos/bin" >> $GITHUB_PATH
+        
+        # Install iOS SDK
+        echo "Downloading iOS SDK ${{ matrix.ios_sdk }}"
+        curl -L "https://github.com/theos/sdks/releases/download/master/iPhoneOS${{ matrix.ios_sdk }}.sdk.tar.xz" -o ios_sdk.tar.xz
+        sudo tar -xf ios_sdk.tar.xz -C $THEOS/sdks/
+        rm ios_sdk.tar.xz
+        
+        # Verify SDK installation
+        ls -la $THEOS/sdks/
+        
+    - name: Update build script
+      run: |
+        # Create a custom build script for this test
+        cp build.sh test_build.sh
+        
+        # Update deployment target
+        sed -i '' 's/CMAKE_OSX_DEPLOYMENT_TARGET=13.0/CMAKE_OSX_DEPLOYMENT_TARGET=${{ matrix.deployment_target }}/g' test_build.sh
+        
+        # Make executable
+        chmod +x test_build.sh
+        
+    - name: Setup build environment
+      run: |
+        export IPHONEOS_DEPLOYMENT_TARGET=${{ matrix.deployment_target }}
+        export MACOSX_DEPLOYMENT_TARGET=10.15
+        export DEVELOPER_DIR=/Applications/Xcode_${{ env.XCODE_VERSION }}.app/Contents/Developer
+        
+        echo "IPHONEOS_DEPLOYMENT_TARGET=${{ matrix.deployment_target }}" >> $GITHUB_ENV
+        echo "MACOSX_DEPLOYMENT_TARGET=10.15" >> $GITHUB_ENV
+        echo "DEVELOPER_DIR=/Applications/Xcode_${{ env.XCODE_VERSION }}.app/Contents/Developer" >> $GITHUB_ENV
+        
+    - name: Test build
+      run: |
+        export THEOS=/opt/theos
+        export PATH=$THEOS/bin:$PATH
+        
+        echo "Testing build with:"
+        echo "- iOS SDK: ${{ matrix.ios_sdk }}"
+        echo "- Deployment Target: ${{ matrix.deployment_target }}"
+        echo "- Theos: $THEOS"
+        
+        # Run the build
+        ./test_build.sh
+        
+    - name: Verify build outputs
+      run: |
+        echo "Build completed for iOS SDK ${{ matrix.ios_sdk }} with deployment target ${{ matrix.deployment_target }}"
+        
+        if [ -d "dist" ]; then
+          echo "Build artifacts found:"
+          ls -la dist/lib/
+          
+          # Check library architectures
+          for lib in dist/lib/*.a; do
+            if [ -f "$lib" ]; then
+              echo "Architecture of $lib:"
+              lipo -info "$lib" || echo "Could not get architecture info for $lib"
+            fi
+          done
+        else
+          echo "ERROR: No dist directory found"
+          exit 1
+        fi
+        
+    - name: Upload test artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-artifacts-ios${{ matrix.ios_sdk }}-target${{ matrix.deployment_target }}
+        path: |
+          dist/
+          **/*.log
+        retention-days: 7
+        
+    - name: Clean up for next test
+      if: always()
+      run: |
+        # Clean up build artifacts
+        rm -rf dist libvncserver Build-OpenSSL-cURL
+        rm -rf BuildJPEG/output BuildLZO/output BuildPNG/output BuildSASL/output
+        git clean -fdx || true
+
+  summary:
+    runs-on: ubuntu-latest
+    needs: test-matrix
+    if: always()
+    
+    steps:
+    - name: Test Results Summary
+      run: |
+        echo "## SDK Compatibility Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| iOS SDK | Deployment Target | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|---------|-------------------|--------|" >> $GITHUB_STEP_SUMMARY
+        
+        # This would ideally parse the results from the matrix job
+        # For now, we'll just indicate the test was run
+        echo "| 16.4 | 13.0 | ${{ needs.test-matrix.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| 17.0 | 14.0 | ${{ needs.test-matrix.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| 17.2 | 14.0 | ${{ needs.test-matrix.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| 17.2 | 15.0 | ${{ needs.test-matrix.result == 'success' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
