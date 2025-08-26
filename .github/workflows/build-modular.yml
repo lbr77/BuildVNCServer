@@ -1,0 +1,426 @@
+name: Build VNC Server for iOS (Modular)
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+
+env:
+  IOS_DEPLOYMENT_TARGET: "13.0"
+
+jobs:
+  build:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Xcode
+      run: |
+        sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+        xcodebuild -version
+
+    - name: Install dependencies
+      run: |
+        brew update
+        brew install cmake ninja autoconf automake libtool pkg-config wget
+
+    - name: Setup environment variables
+      run: |
+        echo "IPHONEOS_DEPLOYMENT_TARGET=${{ env.IOS_DEPLOYMENT_TARGET }}" >> $GITHUB_ENV
+        echo "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer" >> $GITHUB_ENV
+
+    # Step 1: Build OpenSSL and cURL
+    - name: Cache OpenSSL build
+      id: cache-openssl
+      uses: actions/cache@v4
+      with:
+        path: Build-OpenSSL-cURL
+        key: openssl-curl-${{ runner.os }}-${{ hashFiles('build.sh') }}-${{ env.IOS_DEPLOYMENT_TARGET }}
+        restore-keys: |
+          openssl-curl-${{ runner.os }}-
+
+    - name: Build OpenSSL and cURL
+      if: steps.cache-openssl.outputs.cache-hit != 'true'
+      run: |
+        set -ex
+        git clone https://github.com/jasonacox/Build-OpenSSL-cURL.git
+        cd Build-OpenSSL-cURL
+        ./build.sh -y
+
+    # Step 2: Build JPEG Library
+    - name: Cache JPEG build
+      id: cache-jpeg
+      uses: actions/cache@v4
+      with:
+        path: BuildJPEG/output
+        key: jpeg-${{ runner.os }}-${{ hashFiles('BuildJPEG/build.sh') }}-${{ env.IOS_DEPLOYMENT_TARGET }}
+        restore-keys: |
+          jpeg-${{ runner.os }}-
+
+    - name: Build JPEG Library
+      if: steps.cache-jpeg.outputs.cache-hit != 'true'
+      working-directory: BuildJPEG
+      run: |
+        set -ex
+        
+        # Clone libjpeg-turbo
+        git clone https://github.com/libjpeg-turbo/libjpeg-turbo.git
+        WORKDING_DIR="$(pwd)/libjpeg-turbo"
+        
+        if [ ! -d "$WORKDING_DIR" ]; then
+            mkdir -p "$WORKDING_DIR"
+        fi
+        
+        cd "$WORKDING_DIR"
+        WORKDING_DIR=$(pwd)
+        git clean -fdx
+        
+        # Setup iOS build environment
+        IOS_PLATFORMDIR=/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform
+        IOS_SYSROOT=($IOS_PLATFORMDIR/Developer/SDKs/iPhoneOS.sdk)
+        export CFLAGS="-Wall -arch arm64 -miphoneos-version-min=${{ env.IOS_DEPLOYMENT_TARGET }} -funwind-tables"
+        
+        # Create toolchain file
+        cat <<EOF >toolchain.cmake
+        set(BUILD_SHARED_LIBS OFF)
+        set(CMAKE_SYSTEM_NAME iOS)
+        set(CMAKE_SYSTEM_PROCESSOR aarch64)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET ${{ env.IOS_DEPLOYMENT_TARGET }})
+        set(CMAKE_C_COMPILER /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang)
+        EOF
+        
+        # Configure with CMake
+        cmake -G Xcode -B build \
+            -DENABLE_SHARED=0 \
+            -DCMAKE_INSTALL_PREFIX=${WORKDING_DIR}/../output \
+            -DCMAKE_TOOLCHAIN_FILE=toolchain.cmake \
+            -DCMAKE_OSX_SYSROOT=${IOS_SYSROOT}
+        
+        # Build with Xcode
+        xcodebuild build \
+            -project build/libjpeg-turbo.xcodeproj \
+            -scheme ALL_BUILD \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGN_ENTITLEMENTS="" CODE_SIGNING_ALLOWED="NO" \
+            STRIP_INSTALLED_PRODUCT=NO COPY_PHASE_STRIP=NO UNSTRIPPED_PRODUCT=NO
+        
+        # Install
+        cd build
+        ln -s Release-iphoneos Release
+        cmake -P cmake_install.cmake
+
+    # Step 3: Build LZO Library
+    - name: Cache LZO build
+      id: cache-lzo
+      uses: actions/cache@v4
+      with:
+        path: BuildLZO/output
+        key: lzo-${{ runner.os }}-${{ hashFiles('BuildLZO/build.sh') }}-${{ env.IOS_DEPLOYMENT_TARGET }}
+        restore-keys: |
+          lzo-${{ runner.os }}-
+
+    - name: Build LZO Library
+      if: steps.cache-lzo.outputs.cache-hit != 'true'
+      working-directory: BuildLZO
+      run: |
+        set -ex
+        
+        # Download and extract LZO source
+        wget https://www.oberhumer.com/opensource/lzo/download/lzo-2.10.tar.gz
+        tar xvf lzo-2.10.tar.gz lzo-2.10
+        WORKDING_DIR="$(pwd)/lzo-2.10"
+        
+        if [ ! -d "$WORKDING_DIR" ]; then
+            mkdir -p "$WORKDING_DIR"
+        fi
+        
+        cd "$WORKDING_DIR"
+        WORKDING_DIR=$(pwd)
+        
+        # Setup iOS build environment
+        IOS_PLATFORMDIR=/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform
+        IOS_SYSROOT=($IOS_PLATFORMDIR/Developer/SDKs/iPhoneOS.sdk)
+        export CFLAGS="-Wall -arch arm64 -miphoneos-version-min=${{ env.IOS_DEPLOYMENT_TARGET }}"
+        
+        # Configure with CMake
+        cmake -G Xcode -B build \
+            -DCMAKE_INSTALL_PREFIX=${WORKDING_DIR}/../output \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.IOS_DEPLOYMENT_TARGET }} \
+            -DCMAKE_OSX_SYSROOT=${IOS_SYSROOT}
+        
+        # Build with Xcode
+        xcodebuild build \
+            -project build/lzo.xcodeproj \
+            -scheme ALL_BUILD \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGN_ENTITLEMENTS="" CODE_SIGNING_ALLOWED="NO" \
+            STRIP_INSTALLED_PRODUCT=NO COPY_PHASE_STRIP=NO UNSTRIPPED_PRODUCT=NO
+        
+        # Install
+        cd build
+        cmake -P cmake_install.cmake
+
+    # Step 4: Build PNG Library
+    - name: Cache PNG build
+      id: cache-png
+      uses: actions/cache@v4
+      with:
+        path: BuildPNG/output
+        key: png-${{ runner.os }}-${{ hashFiles('BuildPNG/build.sh') }}-${{ env.IOS_DEPLOYMENT_TARGET }}
+        restore-keys: |
+          png-${{ runner.os }}-
+
+    - name: Build PNG Library
+      if: steps.cache-png.outputs.cache-hit != 'true'
+      working-directory: BuildPNG
+      run: |
+        set -ex
+        
+        # Download and extract PNG source
+        wget --content-disposition "http://prdownloads.sourceforge.net/libpng/libpng-1.6.37.tar.gz?download" -O libpng-1.6.37.tar.gz
+        tar xvf libpng-1.6.37.tar.gz libpng-1.6.37
+        WORKDING_DIR="$(pwd)/libpng-1.6.37"
+        
+        if [ ! -d "$WORKDING_DIR" ]; then
+            mkdir -p "$WORKDING_DIR"
+        fi
+        
+        cd "$WORKDING_DIR"
+        WORKDING_DIR=$(pwd)
+        
+        # Setup iOS build environment
+        IOS_PLATFORMDIR=/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform
+        IOS_SYSROOT=($IOS_PLATFORMDIR/Developer/SDKs/iPhoneOS.sdk)
+        export CFLAGS="-Wall -arch arm64 -miphoneos-version-min=${{ env.IOS_DEPLOYMENT_TARGET }}"
+        
+        # Configure with CMake
+        cmake -G Xcode -B build \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.16 \
+            -DCMAKE_POLICY_VERSION_MAX=3.27 \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.IOS_DEPLOYMENT_TARGET }} \
+            -DCMAKE_MACOSX_BUNDLE=${WORKDING_DIR}/../output \
+            -DCMAKE_INSTALL_PREFIX=${WORKDING_DIR}/../output \
+            -DPNG_ARM_NEON=on \
+            -DCMAKE_OSX_SYSROOT=${IOS_SYSROOT}
+        
+        # Build with Xcode
+        xcodebuild build \
+            -project build/libpng.xcodeproj \
+            -scheme ALL_BUILD \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGN_ENTITLEMENTS="" CODE_SIGNING_ALLOWED="NO" \
+            STRIP_INSTALLED_PRODUCT=NO COPY_PHASE_STRIP=NO UNSTRIPPED_PRODUCT=NO
+        
+        # Install
+        cd build
+        cmake -P cmake_install.cmake
+
+    # Step 5: Build SASL Library
+    - name: Cache SASL build
+      id: cache-sasl
+      uses: actions/cache@v4
+      with:
+        path: BuildSASL/output
+        key: sasl-${{ runner.os }}-${{ hashFiles('BuildSASL/build.sh') }}-${{ env.IOS_DEPLOYMENT_TARGET }}
+        restore-keys: |
+          sasl-${{ runner.os }}-
+
+    - name: Build SASL Library
+      if: steps.cache-sasl.outputs.cache-hit != 'true'
+      working-directory: BuildSASL
+      run: |
+        set -ex
+        
+        # Clone Cyrus SASL
+        git clone https://github.com/cyrusimap/cyrus-sasl.git
+        WORKDING_DIR="$(pwd)/cyrus-sasl"
+        
+        if [ ! -d "$WORKDING_DIR" ]; then
+            mkdir -p "$WORKDING_DIR"
+        fi
+        
+        cd "$WORKDING_DIR"
+        WORKDING_DIR=$(pwd)
+        git clean -fdx
+        
+        # Setup iOS build environment
+        OUTPUT_PATH=$(realpath ../output)
+        export CFLAGS="-Wall -arch arm64 -miphoneos-version-min=${{ env.IOS_DEPLOYMENT_TARGET }} -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk"
+        
+        # Configure and build
+        ./autogen.sh --prefix="$OUTPUT_PATH" \
+            --host=aarch64-apple-darwin --with-staticsasl
+        make install DESTDIR=$(realpath ../output)
+        
+        cd ..
+        
+        # Move built files to the correct location
+        mv output/**/cyrus-sasl/build/* output/ || true
+
+    # Step 6: Build libvncserver
+    - name: Cache libvncserver source
+      id: cache-libvnc-src
+      uses: actions/cache@v4
+      with:
+        path: libvncserver
+        key: libvnc-src-${{ runner.os }}-${{ hashFiles('libvncserver.patch') }}
+        restore-keys: |
+          libvnc-src-${{ runner.os }}-
+
+    - name: Clone and patch libvncserver
+      if: steps.cache-libvnc-src.outputs.cache-hit != 'true'
+      run: |
+        set -ex
+        git clone https://github.com/LibVNC/libvncserver.git
+        WORKDING_DIR="$(pwd)/libvncserver"
+        
+        if [ ! -d "$WORKDING_DIR" ]; then
+            mkdir -p "$WORKDING_DIR"
+        fi
+        
+        cd "$WORKDING_DIR"
+        WORKDING_DIR=$(pwd)
+        patch -s -p0 < ../libvncserver.patch
+        git clean -fdx
+
+    - name: Configure libvncserver
+      run: |
+        set -ex
+        cd libvncserver
+        WORKDING_DIR=$(pwd)
+        
+        cmake -G Xcode -B build \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_INSTALL_PREFIX=${WORKDING_DIR}/../output \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.IOS_DEPLOYMENT_TARGET }} \
+            -DWITH_EXAMPLES=OFF \
+            -DWITH_TESTS=OFF \
+            -DLZO_LIBRARIES=$(realpath ../BuildLZO/output/lib) \
+            -DLZO_INCLUDE_DIR=$(realpath ../BuildLZO/output/include) \
+            -DJPEG_LIBRARY=$(realpath ../BuildJPEG/output/lib/libturbojpeg.a) \
+            -DJPEG_INCLUDE_DIR=$(realpath ../BuildJPEG/output/include) \
+            -DPNG_LIBRARY=$(realpath ../BuildPNG/output/lib/libpng16.a) \
+            -DPNG_PNG_INCLUDE_DIR=$(realpath ../BuildPNG/output/include) \
+            -DOPENSSL_LIBRARIES=$(realpath ../Build-OpenSSL-cURL/openssl/iOS/lib) \
+            -DOPENSSL_CRYPTO_LIBRARY=$(realpath ../Build-OpenSSL-cURL/openssl/iOS/lib/libcrypto.a) \
+            -DOPENSSL_SSL_LIBRARY=$(realpath ../Build-OpenSSL-cURL/openssl/iOS/lib/libssl.a) \
+            -DOPENSSL_INCLUDE_DIR=$(realpath ../Build-OpenSSL-cURL/openssl/iOS/include) \
+            -DLIBSASL2_LIBRARIES=$(realpath ../BuildSASL/output/lib) \
+            -DSASL2_INCLUDE_DIR=$(realpath ../BuildSASL/output/include)
+
+    - name: Patch libvncserver build
+      run: |
+        set -ex
+        cd libvncserver/build
+        patch -s -p0 < ../../libvncserver-build.patch
+
+    - name: Build libvncserver
+      run: |
+        set -ex
+        cd libvncserver
+        
+        xcodebuild clean build \
+            -project build/libvncserver.xcodeproj \
+            -scheme ALL_BUILD \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGN_ENTITLEMENTS="" CODE_SIGNING_ALLOWED="NO" \
+            STRIP_INSTALLED_PRODUCT=NO COPY_PHASE_STRIP=NO UNSTRIPPED_PRODUCT=NO
+
+    - name: Install libvncserver
+      run: |
+        set -ex
+        cd libvncserver/build
+        ln -s Release-iphoneos Release
+        cmake -P cmake_install.cmake
+
+    # Step 7: Create distribution package
+    - name: Create distribution package
+      run: |
+        set -ex
+        mkdir -p dist/lib
+        mkdir -p dist/include
+        
+        # Copy OpenSSL libraries and headers
+        lipo -thin arm64 Build-OpenSSL-cURL/openssl/iOS/lib/libcrypto.a -output dist/lib/libcrypto.a
+        lipo -thin arm64 Build-OpenSSL-cURL/openssl/iOS/lib/libssl.a -output dist/lib/libssl.a
+        cp -r Build-OpenSSL-cURL/openssl/iOS/include/* dist/include
+        
+        # Copy JPEG libraries and headers
+        cp BuildJPEG/output/lib/libjpeg.a dist/lib/libjpeg.a
+        cp BuildJPEG/output/lib/libturbojpeg.a dist/lib/libturbojpeg.a
+        cp -r BuildJPEG/output/include/* dist/include
+        
+        # Copy LZO libraries and headers
+        cp BuildLZO/output/lib/liblzo2.a dist/lib/liblzo2.a
+        cp -r BuildLZO/output/include/* dist/include
+        
+        # Copy PNG libraries and headers
+        cp BuildPNG/output/lib/libpng16.a dist/lib/libpng16.a
+        cp BuildPNG/output/lib/libpng16.a dist/lib/libpng.a
+        cp -r BuildPNG/output/include/* dist/include
+        
+        # Copy SASL libraries and headers
+        cp BuildSASL/output/lib/libsasl2.a dist/lib/libsasl2.a
+        cp -r BuildSASL/output/include/* dist/include
+        
+        # Copy VNC libraries and headers
+        cp output/lib/libvncserver.a dist/lib/libvncserver.a
+        cp output/lib/libvncclient.a dist/lib/libvncclient.a
+        cp -r output/include/* dist/include
+
+    - name: Verify build outputs
+      run: |
+        echo "Build completed. Checking outputs:"
+        ls -la dist/lib/
+        ls -la dist/include/
+        
+        # Check architecture of built libraries
+        for lib in dist/lib/*.a; do
+          echo "Architecture of $lib:"
+          lipo -info "$lib" || echo "Could not get architecture info for $lib"
+        done
+
+    - name: Package artifacts
+      run: |
+        # Create release package
+        mkdir -p release
+        cp -r dist release/
+        cp README.md release/
+        
+        # Create tarball
+        tar -czf libvncserver-ios-arm64.tar.gz -C release .
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: libvncserver-ios-arm64-modular
+        path: |
+          libvncserver-ios-arm64.tar.gz
+          dist/
+        retention-days: 30
+
+    - name: Upload build logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs-modular
+        path: |
+          **/*.log
+          **/build.log
+        retention-days: 7
