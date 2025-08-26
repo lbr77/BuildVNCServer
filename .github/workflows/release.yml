@@ -1,0 +1,194 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag'
+        required: true
+        default: 'v1.0.0'
+
+env:
+  IOS_DEPLOYMENT_TARGET: "14.0"
+  XCODE_VERSION: "15.1"
+  IOS_SDK_VERSION: "17.2"
+
+jobs:
+  release:
+    runs-on: macos-14
+    permissions:
+      contents: write
+      
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Select Xcode version
+      run: |
+        sudo xcode-select -s /Applications/Xcode_${{ env.XCODE_VERSION }}.app/Contents/Developer
+        xcodebuild -version
+        
+    - name: Install dependencies
+      run: |
+        brew update
+        brew install cmake ninja autoconf automake libtool pkg-config
+        
+    - name: Setup Theos
+      run: |
+        # Install Theos
+        export THEOS=/opt/theos
+        sudo git clone --recursive https://github.com/theos/theos.git $THEOS
+        sudo chown -R $(id -u):$(id -g) $THEOS
+        
+        # Setup Theos environment
+        echo "export THEOS=/opt/theos" >> $GITHUB_ENV
+        echo "export PATH=\$THEOS/bin:\$PATH" >> $GITHUB_ENV
+        echo "/opt/theos/bin" >> $GITHUB_PATH
+        
+        # Install iOS SDK if not available
+        if [ ! -d "$THEOS/sdks/iPhoneOS${{ env.IOS_SDK_VERSION }}.sdk" ]; then
+          echo "Downloading iOS SDK ${{ env.IOS_SDK_VERSION }}"
+          curl -L "https://github.com/theos/sdks/releases/download/master/iPhoneOS${{ env.IOS_SDK_VERSION }}.sdk.tar.xz" -o ios_sdk.tar.xz
+          sudo tar -xf ios_sdk.tar.xz -C $THEOS/sdks/
+          rm ios_sdk.tar.xz
+        fi
+        
+    - name: Update build script for higher SDK
+      run: |
+        # Update the build script to use higher iOS deployment target
+        sed -i '' 's/CMAKE_OSX_DEPLOYMENT_TARGET=13.0/CMAKE_OSX_DEPLOYMENT_TARGET=${{ env.IOS_DEPLOYMENT_TARGET }}/g' build.sh
+        chmod +x build.sh
+        
+    - name: Setup build environment
+      run: |
+        export IPHONEOS_DEPLOYMENT_TARGET=${{ env.IOS_DEPLOYMENT_TARGET }}
+        export MACOSX_DEPLOYMENT_TARGET=10.15
+        export DEVELOPER_DIR=/Applications/Xcode_${{ env.XCODE_VERSION }}.app/Contents/Developer
+        
+        echo "IPHONEOS_DEPLOYMENT_TARGET=${{ env.IOS_DEPLOYMENT_TARGET }}" >> $GITHUB_ENV
+        echo "MACOSX_DEPLOYMENT_TARGET=10.15" >> $GITHUB_ENV
+        echo "DEVELOPER_DIR=/Applications/Xcode_${{ env.XCODE_VERSION }}.app/Contents/Developer" >> $GITHUB_ENV
+        
+    - name: Build VNC Server
+      run: |
+        export THEOS=/opt/theos
+        export PATH=$THEOS/bin:$PATH
+        ./build.sh
+        
+    - name: Create release package
+      run: |
+        # Get the tag name
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          TAG_NAME="${{ github.event.inputs.tag }}"
+        else
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+        fi
+        
+        echo "Creating release for tag: $TAG_NAME"
+        
+        # Create release directories
+        mkdir -p release/libvncserver-ios-${TAG_NAME}
+        
+        # Copy build artifacts
+        cp -r dist/* release/libvncserver-ios-${TAG_NAME}/
+        cp README.md release/libvncserver-ios-${TAG_NAME}/
+        
+        # Create version info file
+        cat > release/libvncserver-ios-${TAG_NAME}/VERSION.txt << EOF
+        BuildVNCServer iOS Library
+        Version: ${TAG_NAME}
+        Built on: $(date)
+        iOS Deployment Target: ${{ env.IOS_DEPLOYMENT_TARGET }}
+        iOS SDK Version: ${{ env.IOS_SDK_VERSION }}
+        Xcode Version: ${{ env.XCODE_VERSION }}
+        
+        Components:
+        - libvncserver (static library)
+        - libvncclient (static library)
+        - libjpeg-turbo
+        - libpng
+        - lzo
+        - openssl
+        - libsasl2
+        
+        Architecture: arm64 (iOS devices)
+        EOF
+        
+        # Create tarballs
+        cd release
+        tar -czf libvncserver-ios-${TAG_NAME}.tar.gz libvncserver-ios-${TAG_NAME}/
+        zip -r libvncserver-ios-${TAG_NAME}.zip libvncserver-ios-${TAG_NAME}/
+        cd ..
+        
+        # Generate checksums
+        cd release
+        shasum -a 256 libvncserver-ios-${TAG_NAME}.tar.gz > libvncserver-ios-${TAG_NAME}.tar.gz.sha256
+        shasum -a 256 libvncserver-ios-${TAG_NAME}.zip > libvncserver-ios-${TAG_NAME}.zip.sha256
+        cd ..
+        
+        echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_ENV
+        
+    - name: Generate release notes
+      run: |
+        cat > release_notes.md << EOF
+        # BuildVNCServer iOS Library ${TAG_NAME}
+        
+        ## What's Included
+        
+        This release contains pre-built static libraries for iOS arm64 architecture:
+        
+        - **libvncserver.a** - VNC server library
+        - **libvncclient.a** - VNC client library
+        - **Supporting libraries**: libjpeg-turbo, libpng, lzo, openssl, libsasl2
+        - **Headers** - All necessary header files for development
+        
+        ## Build Details
+        
+        - **iOS Deployment Target**: ${{ env.IOS_DEPLOYMENT_TARGET }}
+        - **iOS SDK Version**: ${{ env.IOS_SDK_VERSION }}
+        - **Xcode Version**: ${{ env.XCODE_VERSION }}
+        - **Architecture**: arm64 (iOS devices)
+        - **Built with**: Theos + GitHub Actions
+        
+        ## Usage
+        
+        1. Download and extract the release package
+        2. Add the libraries to your iOS project
+        3. Include the header files in your project
+        4. Link against the static libraries
+        
+        ## Files
+        
+        - \`libvncserver-ios-${TAG_NAME}.tar.gz\` - Compressed archive (recommended)
+        - \`libvncserver-ios-${TAG_NAME}.zip\` - ZIP archive
+        - \`*.sha256\` - Checksum files for verification
+        
+        ## Verification
+        
+        Verify the integrity of downloaded files using the provided SHA256 checksums:
+        
+        \`\`\`bash
+        shasum -a 256 -c libvncserver-ios-${TAG_NAME}.tar.gz.sha256
+        \`\`\`
+        EOF
+        
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ env.TAG_NAME }}
+        name: BuildVNCServer iOS ${{ env.TAG_NAME }}
+        body_path: release_notes.md
+        files: |
+          release/libvncserver-ios-${{ env.TAG_NAME }}.tar.gz
+          release/libvncserver-ios-${{ env.TAG_NAME }}.zip
+          release/libvncserver-ios-${{ env.TAG_NAME }}.tar.gz.sha256
+          release/libvncserver-ios-${{ env.TAG_NAME }}.zip.sha256
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
