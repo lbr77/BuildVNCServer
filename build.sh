@@ -4,7 +4,7 @@ set -ex
 
 git clone https://github.com/jasonacox/Build-OpenSSL-cURL.git
 cd Build-OpenSSL-cURL
-./build.sh -y -p iOS,macOS
+./build.sh -y
 cd ..
 cd BuildJPEG
 ./build.sh
